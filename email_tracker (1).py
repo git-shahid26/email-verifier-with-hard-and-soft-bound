@@ -10,6 +10,139 @@ Original file is located at
 !pip install dnspython validate_email_address tqdm
 
 # Install dependencies
+    !pip install dnspython validate_email_address tqdm
+# Advanced Email Validation with DNS, SMTP, and Intelligent Classification (Streamlit Version)
+%%writefile app.py
+import streamlit as st
+import pandas as pd
+import smtplib
+import dns.resolver
+import socket
+import re
+from datetime import datetime
+from io import StringIO
+import ast
+
+# Helper functions
+def get_mx_record(domain):
+    try:
+        records = dns.resolver.resolve(domain, 'MX')
+        return sorted([(r.preference, str(r.exchange)) for r in records])[0][1]
+    except Exception:
+        return None
+
+def smtp_check(email, mx_host):
+    try:
+        server = smtplib.SMTP(timeout=10)
+        server.connect(mx_host)
+        server.helo(socket.gethostname())
+        server.mail('verify@example.com')
+        code, message = server.rcpt(email)
+        server.quit()
+        return code, message.decode()
+    except Exception as e:
+        return None, str(e)
+
+def suggest_typo(domain):
+    common_domains = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com',
+                      'icloud.com', 'aol.com', 'protonmail.com', 'zoho.com']
+    suggestions = {}
+    for common in common_domains:
+        dist = sum(1 for a, b in zip(domain, common) if a != b) + abs(len(domain) - len(common))
+        if dist <= 2:
+            suggestions[common] = dist
+    return sorted(suggestions, key=suggestions.get)[:1] if suggestions else []
+
+def classify(email):
+    result = {
+        "email": email,
+        "status": "Unknown",
+        "reason": "",
+        "suggested_fix": ""
+    }
+
+    if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+        result["status"] = "Invalid"
+        result["reason"] = "Invalid format or typo"
+        return result
+
+    local, domain = email.split('@')
+
+    mx_host = get_mx_record(domain)
+    if not mx_host:
+        result["status"] = "Failed"
+        result["reason"] = "DNS or MX record missing"
+        result["suggested_fix"] = ', '.join(suggest_typo(domain))
+        return result
+
+    code, message = smtp_check(email, mx_host)
+    if code is None:
+        result["status"] = "Error"
+        result["reason"] = f"SMTP error: {message}"
+    elif code == 250:
+        result["status"] = "Valid"
+        result["reason"] = "Accepted by server"
+    elif code == 550:
+        result["status"] = "Invalid"
+        result["reason"] = "Nonexistent address or deleted mailbox"
+        result["suggested_fix"] = ', '.join(suggest_typo(domain))
+    elif code == 450:
+        result["status"] = "Temporary Fail"
+        result["reason"] = "Temporary server issue (greylisting, retry later)"
+    else:
+        result["status"] = "Unknown"
+        result["reason"] = f"SMTP response: {code} - {message}"
+    return result
+
+# Streamlit App
+st.set_page_config(page_title="Advanced Email Validator", layout="wide")
+st.title("📧 Advanced Email Validator with SMTP & DNS Checks")
+
+uploaded_file = st.file_uploader("Upload a CSV file with an 'email' column", type="csv")
+if uploaded_file is not None:
+    try:
+        df = pd.read_csv(uploaded_file)
+        if 'email' not in df.columns:
+            st.error("CSV must contain a column named 'email'")
+        else:
+            emails = df['email'].dropna().unique()
+
+            st.info(f"Running validation on {len(emails)} unique email(s)...")
+            results = []
+            progress = st.progress(0)
+            for idx, email in enumerate(emails):
+                results.append(classify(email))
+                progress.progress((idx + 1) / len(emails))
+
+            result_df = pd.DataFrame(results)
+            st.success("✅ Validation complete!")
+
+            st.subheader("📋 Full Results")
+            st.dataframe(result_df)
+
+            # Timestamp
+            run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+            # Download full results
+            csv_full = result_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="⬇️ Download Full Result CSV",
+                data=csv_full,
+                file_name=f"email_validation_results_{run_timestamp}.csv",
+                mime='text/csv'
+            )
+
+            # Filter valid emails
+            valid_df = result_df[result_df['status'] == 'Valid']
+            csv_valid = valid_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="⬇️ Download Valid Emails Only CSV",
+                data=csv_valid,
+                file_name=f"valid_emails_only_{run_timestamp}.csv",
+                mime='text/csv'
+            )
+    except Exception as e:
+        st.error(f"❌ Error processing file: {e}")
 
 
 import pandas as pd
